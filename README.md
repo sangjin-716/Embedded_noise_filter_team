@@ -1,5 +1,6 @@
 # **2025-2 Embedded System Design Project** 
 > **Team:** Noise_Filter_Team(Silentium Factorem)
+
 > **Period:** 2025.11.26 ~ 2025.12.22
 
 ---
