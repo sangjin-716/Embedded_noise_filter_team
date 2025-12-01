@@ -9,7 +9,7 @@ import threading
 from pyrnnoise import RNNoise  # 라즈베리파이에 rnnoise 라이브러리 설치되어 있어야 함
 
 # ===== 수신측(Pi_B) IP / PORT 설정 =====
-RECEIVER_IP = "192.168.0.3"  # <-- 여기 Pi_B IP로 바꿔라
+RECEIVER_IP = "192.168.0.3" 
 RECEIVER_PORT = 54321
 # =====================================
 
@@ -219,3 +219,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
