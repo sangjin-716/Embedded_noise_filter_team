@@ -1,24 +1,29 @@
-# pi_a_sender_filtered.py
-
 import socket
 import sounddevice as sd
 import numpy as np
 from collections import deque
 import math
 import threading
-from pyrnnoise import RNNoise  # 라즈베리파이에 rnnoise 라이브러리 설치되어 있어야 함
+from pyrnnoise import RNNoise  # 윈도우용 RNNoise 래퍼
 
-# ===== 수신측(Pi_B) IP / PORT 설정 =====
-RECEIVER_IP = "192.168.0.3" 
-RECEIVER_PORT = 54321
-# =====================================
+# ===== 네트워크 설정 =====
+LISTEN_IP = "0.0.0.0"   # 모든 인터페이스에서 받기
+LISTEN_PORT = 54321
+# =======================
 
 # ===== 오디오 설정 =====
 SAMPLE_RATE = 48000
 CHANNELS = 1
 CHUNK = 480          # 10ms @ 48kHz
 DTYPE = "int16"
+BYTES_PER_CHUNK = CHUNK * CHANNELS * 2
 # =======================
+
+# ===== 인위적 딜레이 설정 =====
+DELAY_SEC = 0.5
+DELAY_FRAMES = int(np.ceil(DELAY_SEC * SAMPLE_RATE / CHUNK))
+print(f"[PC] delay: {DELAY_SEC}s ≒ {DELAY_FRAMES} frames")
+# ===========================
 
 # 0: raw, 1: HPF, 2: RNN, 3: HPF+RNN
 MODE = 0
@@ -27,7 +32,7 @@ MODE_NAME = {0: "RAW", 1: "HPF", 2: "RNN", 3: "BOTH"}
 # ===== RNN 필터 강도 (0.0 ~ 1.0) =====
 # 1.0 = RNNoise 100% 적용
 # 0.5 = 원본(dry) 50% + RNNoise 50%
-# 0.0 = RNNoise 효과 없음 (실질적으로 dry만 전송)
+# 0.0 = RNNoise 효과 없음 (실질적으로 dry만 재생)
 RNN_MIX = 0.7
 # =====================================
 
@@ -72,15 +77,10 @@ denoiser = RNNoise(sample_rate=SAMPLE_RATE)
 
 
 def mode_input_thread():
-    """
-    터미널에서:
-      0 / 1 / 2 / 3  → 필터 모드 변경
-      r 0.5          → RNNoise 50% 믹스
-    """
     global MODE, RNN_MIX
     print("\nmode: 0=RAW, 1=HPF, 2=RNN, 3=HPF+RNN")
     print("mix:  r <0.0~1.0>  (예: r 0.5 → RNNoise 50%)")
-    print(f"[Pi_A] start mode: {MODE} ({MODE_NAME[MODE]}), RNN_MIX={RNN_MIX}")
+    print(f"[PC] start mode: {MODE} ({MODE_NAME[MODE]}), RNN_MIX={RNN_MIX}")
 
     while True:
         try:
@@ -91,7 +91,7 @@ def mode_input_thread():
         # --- 모드 변경 (0/1/2/3) ---
         if s in ("0", "1", "2", "3"):
             MODE = int(s)
-            print(f"[Pi_A] mode -> {MODE} ({MODE_NAME[MODE]})")
+            print(f"[PC] mode -> {MODE} ({MODE_NAME[MODE]})")
             continue
 
         # --- RNN 강도 변경: r 0.7 이런 식 ---
@@ -110,10 +110,11 @@ def mode_input_thread():
             # 0.0 ~ 1.0 범위로 클램프
             v = max(0.0, min(1.0, v))
             RNN_MIX = v
-            print(f"[Pi_A] RNN_MIX -> {RNN_MIX}")
+            print(f"[PC] RNN_MIX -> {RNN_MIX}")
             continue
 
         print("명령어:  0/1/2/3  또는  r <0.0~1.0>")
+
 
 
 def apply_filter(frames: np.ndarray) -> np.ndarray:
@@ -174,18 +175,24 @@ def apply_filter(frames: np.ndarray) -> np.ndarray:
 
 
 def main():
-    # 모드 입력 스레드 시작
+    # 모드 입력 스레드
     t = threading.Thread(target=mode_input_thread, daemon=True)
     t.start()
 
-    # 소켓 생성 및 Pi_B로 연결
+    # 소켓 서버 열기
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    print(f"[Pi_A] receiver {RECEIVER_IP}:{RECEIVER_PORT} 에 연결 시도...")
-    sock.connect((RECEIVER_IP, RECEIVER_PORT))
-    print("[Pi_A] 연결 성공. 마이크 + 필터 스트리밍 시작.")
+    sock.bind((LISTEN_IP, LISTEN_PORT))
+    sock.listen(1)
+    print(f"[PC] listen {LISTEN_IP}:{LISTEN_PORT}... (Pi가 접속할 때까지 대기)")
 
-    # 마이크 입력 스트림 열기
-    with sd.InputStream(
+    conn, addr = sock.accept()
+    print(f"[PC] Pi connected: {addr}")
+
+    buffer = b""
+    delay_buffer = deque()
+
+    # 스피커 출력 스트림
+    with sd.OutputStream(
         samplerate=SAMPLE_RATE,
         channels=CHANNELS,
         dtype=DTYPE,
@@ -193,28 +200,34 @@ def main():
     ) as stream:
         try:
             while True:
-                frames, overflowed = stream.read(CHUNK)
-                if overflowed:
-                    print("[Pi_A] Warning: input overflow", flush=True)
+                data = conn.recv(4096)
+                if not data:
+                    print("[PC] recv end")
+                    break
 
-                # frames shape: (CHUNK, CHANNELS)
-                if frames.ndim == 2 and frames.shape[1] == 1:
-                    frames_mono = frames[:, 0]
-                else:
-                    frames_mono = frames.reshape(-1)
+                buffer += data
 
-                # 필터 적용
-                filtered = apply_filter(frames_mono)
+                while len(buffer) >= BYTES_PER_CHUNK:
+                    frame_bytes = buffer[:BYTES_PER_CHUNK]
+                    buffer = buffer[BYTES_PER_CHUNK:]
 
-                # int16 → bytes 로 변환해서 전송
-                data = filtered.astype(np.int16).tobytes()
-                sock.sendall(data)
+                    frames = np.frombuffer(frame_bytes, dtype=np.int16)
+                    filtered = apply_filter(frames)
+
+                    delay_buffer.append(filtered)
+
+                    if len(delay_buffer) < DELAY_FRAMES:
+                        continue
+
+                    delayed_frames = delay_buffer.popleft()
+                    stream.write(delayed_frames)
 
         except KeyboardInterrupt:
-            print("\n[Pi_A] Ctrl+C로 종료.")
+            print("\n[PC] interrupted")
         finally:
+            conn.close()
             sock.close()
-            print("[Pi_A] 소켓 닫힘.")
+            print("[PC] socket closed")
 
 
 if __name__ == "__main__":

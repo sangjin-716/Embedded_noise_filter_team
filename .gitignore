@@ -1,0 +1,10 @@
+venv/
+.venv/
+
+__pycache__/
+*.pyc
+
+.env
+.env.*
+
+pc_receiver/rnnoise/

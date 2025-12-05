@@ -2,7 +2,7 @@ import socket
 import sounddevice as sd
 import numpy as np
 
-PI_IP = ""  # ←라즈베리파이 IP or 공유기 공인 IP
+PI_IP = "172.21.107.25"  # ←라즈베리파이 IP or 공유기 공인 IP
 PI_PORT = 54321
 
 SAMPLE_RATE = 48000
