@@ -5,7 +5,7 @@ import math
 import threading
 import time
 import RPi.GPIO as GPIO
-from rnnoise_wrapper import RNNoise  # 우리가 만든 C 래퍼
+from rnnoise_wrapper import RNNoise 
 
 # ===== 수신측(Pi_B) IP / PORT 설정 =====
 RECEIVER_IP = "172.30.1.93"
